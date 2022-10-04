@@ -1,9 +1,9 @@
-import re
-
+# Group categories
 groups = ['masc_noun', 'fem_noun', 'verb', 'determiner',
           'adjective', 'conjunction', 'preposition']
 
 
+# Read the translation from the lexicon to determine the vocabulary
 def read_vocabulary():
     contents = open('lexicon.txt', 'r').read()
     sections = contents.split('\n\n')
@@ -29,6 +29,8 @@ def read_vocabulary():
     return vocabulary
 
 
+# Read the rules in two categories: rewriting rules and POS identification rules
+# For each of them, keep the rules as an array of tuples
 def read_rules():
     contents = open('rules.txt', 'r').read()
 
@@ -59,6 +61,7 @@ def read_rules():
     return rewriting_rules, pos_rules
 
 
+# Check whether a word is part of the vocabulary or not
 def is_in_vocabulary(vocabulary, word):
     word = word.lower()
     for i in range(7):
@@ -77,35 +80,105 @@ def get_translation_and_pos(vocabulary, word):
     return word, 'proper_noun'
 
 
-def morph_sentence(rewriting_rules, pos_rules, vocabulary, sentence):
-    original_sentence = sentence[:-1].lower()
-    original_sentence_list = original_sentence.split()
+# First pass of translating the sentence, applying the POS identification rules
+def apply_pos_rules(pos_rules, vocabulary, sentence):
+    sentence_list = sentence.split()
+    translation_list = sentence.split()
 
-    rewritten_ver = []
-    for word in original_sentence_list:
-        _, pos = get_translation_and_pos(vocabulary, word)
-        rewritten_ver.append(pos)
-    rewritten_ver = ' '.join(rewritten_ver)
-
-    for pos_rule in pos_rules:
-        right_side = pos_rule[0].split()
-        if is_in_vocabulary(vocabulary, right_side[0]):
+    for rule in pos_rules:
+        left = rule[0].split()  # left side of the rule (before ->)
+        right = rule[1].split()  # right side of the rule (after ->)
+        # For cases like TRANSLATABLE_WORD + GROUP_CATEGORY -> ...
+        if is_in_vocabulary(vocabulary, left[0]):
+            # list of indexes at which the word is present in the sentence
             occurences = [
-                i for i, w in enumerate(original_sentence_list)
-                if w == right_side[0]
+                i for i, w in enumerate(sentence_list)
+                if w == left[0]
             ]
-            print('first', right_side[0], occurences)
+            if occurences:
+                for i in occurences:
+                    if i+1 < len(sentence_list):
+                        next_word_translation, next_word_pos = get_translation_and_pos(
+                            vocabulary, sentence_list[i+1]
+                        )
+                        # We match on the left side of the rule
+                        # (plus account for rules with unspecified noun)
+                        if next_word_pos == left[1] \
+                                or (next_word_pos in ['masc_noun', 'fem_noun'] and left[1] == 'noun'):
+                            # For cases like ... -> TARGET_GROUP_CATEGORY + GROUP_CATEGORY
+                            if right[0] in groups or right[0] == 'noun':
+                                if right[0] == 'noun':
+                                    right[0] = 'masc_noun'
+                                pos_translation = vocabulary[right[0]][left[0]]
+                                translation_list[i] = pos_translation
+                            # For cases like ... -> TRANSLATION + GROUP_CATEGORY
+                            else:
+                                translation_list[i] = right[0]
+                                translation_list[i+1] = next_word_translation
+        # For cases like GROUP_CATEGORY + TRANSLATABLE_WORD -> ...
         else:
             occurences = [
-                i for i, w in enumerate(original_sentence_list)
-                if w == right_side[1]
+                i for i, w in enumerate(sentence_list)
+                if w == left[1]
             ]
-            print('second', right_side[1], occurences)
+            if occurences:
+                for i in occurences:
+                    if i > 0:
+                        prev_word_translation, prev_word_pos = get_translation_and_pos(
+                            vocabulary, sentence_list[i-1]
+                        )
+                        # We match on the left side of the rule
+                        # (plus account for rules with unspecified noun)
+                        if prev_word_pos == left[0] \
+                                or (prev_word_pos in ['masc_noun', 'fem_noun'] and left[0] == 'noun'):
+                            # For cases like ... -> GROUP_CATEGORY + TARGET_GROUP_CATEGORY
+                            if right[1] in groups or right[1] == 'noun':
+                                if right[1] == 'noun':
+                                    right[1] = 'masc_noun'
+                                pos_translation = vocabulary[right[1]][left[1]]
+                                translation_list[i] = pos_translation
+                            # For cases like ... -> GROUP_CATEGORY + TRANSLATION
+                            else:
+                                translation_list[i] = right[1]
+                                translation_list[i-1] = prev_word_translation
+
+    return ' '.join(translation_list)
 
 
+# Second pass of translating the sentence, applying the rewriting rules
+# (We take for granted that the inversion rule is the only one)
+def apply_rewriting_rules(rewriting_rules, vocabulary, sentence):
+    sentence_list = sentence.split()
+    translation_list = sentence.split()
+
+    # Create sentence equivalent POS list
+    # (We do this because we assume all rewriting rules only use POS groups)
+    pos_list = []
+    for word in sentence_list:
+        _, pos = get_translation_and_pos(vocabulary, word)
+        pos_list.append(pos)
+
+    for rule in rewriting_rules:
+        left = rule[0].split()  # left side of the rule (before ->)
+
+        for i in range(len(sentence_list) - 1):
+            if (
+                sentence_list[i] == left[0] or (sentence_list[i] in ['masc_noun', 'fem_noun'] and left[0] == 'noun')) \
+                and (sentence_list[i+1] == left[1] or (sentence_list[i+1] in ['masc_noun', 'fem_noun'] and left[1] == 'noun')
+                     ):
+                aux = translation_list[i]
+                translation_list[i] = translation_list[i+1]
+                translation_list[i+1] = aux
+
+    return ' '.join(translation_list)
+
+
+# Translate the sentence word-by-word using the vocabulary
+# If the word is not found in the vocabulary, it is assumed to already
+# have been translated in previous passes, or is a proper noun
 def translate_sentence(vocabulary, sentence):
     full_translation = ''
-    for word in sentence[:-1].lower().split():
+    for word in sentence.split():
         translation, _ = get_translation_and_pos(vocabulary, word)
         full_translation += translation + ' '
     return full_translation
@@ -114,11 +187,21 @@ def translate_sentence(vocabulary, sentence):
 if __name__ == '__main__':
     vocabulary = read_vocabulary()
     rewriting_rules, pos_rules = read_rules()
-    print(rewriting_rules)
-    print(pos_rules)
-    print()
 
     sentence = str(input('Sentence to translate: '))
-    # translation = translate_sentence(vocabulary, sentence)
-    # print('Translation:', translation)
-    test = morph_sentence(rewriting_rules, pos_rules, vocabulary, sentence)
+    # sentence = 'Mary reads a book.'
+    # sentence = 'A book is under the table.'
+    # sentence = 'Mary cut the sugar cane with a saw.'
+    # sentence = 'Mary cut the sugar cane and is happy.'
+    # sentence = 'The woman with a red cane saw a cat under the table and walks to the cat.'
+
+    sentence = sentence[:-1].lower()  # ignore the dot at the end
+
+    first_pass = apply_pos_rules(pos_rules, vocabulary, sentence)
+    second_pass = apply_rewriting_rules(
+        rewriting_rules, vocabulary, first_pass)
+    final_pass = translate_sentence(vocabulary, second_pass)
+
+    print(first_pass)
+    print(second_pass)
+    print(final_pass)
